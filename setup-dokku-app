@@ -1,0 +1,151 @@
+#!/bin/bash
+
+echo "===== SETUP COMPLETO DOKKU APP 🚀 ====="
+
+# validar root
+if [ "$EUID" -ne 0 ]; then
+  echo "❌ Usa: sudo ./setup-dokku-app.sh"
+  exit 1
+fi
+
+read -p "Nombre de la app (ej: afi-v2): " APP_NAME
+
+if [ -z "$APP_NAME" ]; then
+  echo "❌ Debes ingresar el nombre de la app"
+  exit 1
+fi
+
+APP_PATH="/home/dokku/$APP_NAME"
+NGINX_DIR="$APP_PATH/nginx.conf.d"
+
+mkdir -p $NGINX_DIR
+
+echo "===== STORAGE ====="
+
+read -p "¿Usar storage persistente? (y/n): " USE_STORAGE
+
+if [[ "$USE_STORAGE" == "y" ]]; then
+  BASE_PATH="/var/lib/dokku/data/storage/$APP_NAME"
+
+  echo "✔ Usando storage persistente en $BASE_PATH"
+
+  mkdir -p $BASE_PATH/static
+  mkdir -p $BASE_PATH/media
+
+  chown -R dokku:dokku $BASE_PATH
+  chmod -R 755 $BASE_PATH
+
+  dokku storage:ensure-directory $APP_NAME
+
+  dokku storage:unmount $APP_NAME /app/static 2>/dev/null
+  dokku storage:unmount $APP_NAME /app/media 2>/dev/null
+
+  dokku storage:mount $APP_NAME $BASE_PATH/static:/app/static
+  dokku storage:mount $APP_NAME $BASE_PATH/media:/app/media
+
+  STATIC_PATH="$BASE_PATH/static"
+  MEDIA_PATH="$BASE_PATH/media"
+
+else
+  echo "✔ Usando rutas por defecto (no persistente)"
+
+  STATIC_PATH="$APP_PATH/static"
+  MEDIA_PATH="$APP_PATH/media"
+
+  mkdir -p $STATIC_PATH
+  mkdir -p $MEDIA_PATH
+
+  chown -R dokku:dokku $STATIC_PATH $MEDIA_PATH
+  chmod -R 755 $STATIC_PATH $MEDIA_PATH
+fi
+
+echo "===== DJANGO CONFIG ====="
+
+read -p "¿Es una app Django? (y/n): " IS_DJANGO
+
+if [[ "$IS_DJANGO" == "y" ]]; then
+
+  read -p "¿Configurar STATIC? (y/n): " USE_STATIC
+  read -p "¿Configurar MEDIA? (y/n): " USE_MEDIA
+
+  echo "===== CREANDO NGINX serve-files.conf ====="
+
+  NGINX_SERVE="$NGINX_DIR/serve-files.conf"
+
+  echo "" > $NGINX_SERVE
+
+  if [[ "$USE_STATIC" == "y" ]]; then
+    cat <<EOF >> $NGINX_SERVE
+location /static/ {
+  alias $STATIC_PATH/;
+  expires 30d;
+  add_header Cache-Control "public";
+}
+EOF
+  fi
+
+  if [[ "$USE_MEDIA" == "y" ]]; then
+    cat <<EOF >> $NGINX_SERVE
+
+location /media/ {
+  alias $MEDIA_PATH/;
+  expires 30d;
+  add_header Cache-Control "public";
+}
+EOF
+  fi
+
+  chown dokku:dokku $NGINX_SERVE
+fi
+
+echo "===== CORS ====="
+
+read -p "¿Habilitar CORS abierto? (y/n): " ENABLE_CORS
+
+if [[ "$ENABLE_CORS" == "y" ]]; then
+  cat <<EOF > $NGINX_DIR/cors.conf
+add_header "Access-Control-Allow-Origin" * always;
+add_header "Access-Control-Allow-Methods" "GET, POST, PUT, OPTIONS, HEAD, PATCH, DELETE" always;
+add_header "Access-Control-Allow-Headers" "Authorization, Origin, X-Requested-With, Content-Type, Accept" always;
+
+if (\$request_method = OPTIONS) {
+  return 204;
+}
+EOF
+
+  chown dokku:dokku $NGINX_DIR/cors.conf
+fi
+
+echo "===== FILE SIZE ====="
+
+read -p "Tamaño máximo upload (default 20M): " FILE_SIZE
+FILE_SIZE=${FILE_SIZE:-20M}
+
+cat <<EOF > $NGINX_DIR/file-size.conf
+client_max_body_size $FILE_SIZE;
+EOF
+
+chown dokku:dokku $NGINX_DIR/file-size.conf
+
+echo "===== HSTS ====="
+
+cat <<EOF > $NGINX_DIR/hsts.conf
+add_header Strict-Transport-Security "max-age=15724800; includeSubdomains" always;
+EOF
+
+chown dokku:dokku $NGINX_DIR/hsts.conf
+
+echo "===== REINICIANDO APP ====="
+
+dokku ps:restart $APP_NAME
+
+echo "===== LISTO 🚀 ====="
+echo "✔ App configurada"
+echo "✔ Storage listo"
+echo "✔ Nginx optimizado"
+
+if [[ "$IS_DJANGO" == "y" ]]; then
+  echo ""
+  echo "👉 Ejecuta:"
+  echo "dokku run $APP_NAME python manage.py collectstatic --noinput"
+fi
