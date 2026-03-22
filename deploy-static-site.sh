@@ -41,23 +41,27 @@ ln -sf $NGINX_AVAILABLE $NGINX_ENABLED
 echo "===== VALIDANDO NGINX ====="
 nginx -t || { echo "Error en nginx"; exit 1; }
 
-systemctl restart nginx
+systemctl reload nginx
 
-echo "===== CONFIGURANDO CLOUDFLARED ====="
+echo "===== CONFIGURANDO CLOUDFLARED (SIN BORRAR) ====="
 
+# Si no existe config.yml, lo crea base
+if [ ! -f "$CLOUDFLARED_CONFIG" ]; then
 cat > $CLOUDFLARED_CONFIG <<EOF
 tunnel: $TUNNEL_NAME
 credentials-file: $CREDENTIALS
 
 ingress:
-  - hostname: $DOMAIN
-    service: http://localhost:80
-
-  - hostname: www.$DOMAIN
-    service: http://localhost:80
-
-  - service: http_status:404
 EOF
+fi
+
+# Evita duplicados
+if grep -q "$DOMAIN" "$CLOUDFLARED_CONFIG"; then
+    echo "⚠️ El dominio ya existe en cloudflared, no se agrega"
+else
+    # Inserta antes de la última línea (http_status:404)
+    sed -i "/http_status:404/i\  - hostname: $DOMAIN\n    service: http://localhost:80\n\n  - hostname: www.$DOMAIN\n    service: http://localhost:80\n" $CLOUDFLARED_CONFIG
+fi
 
 echo "===== REINICIANDO CLOUDFLARED ====="
 systemctl restart cloudflared
