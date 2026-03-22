@@ -1,53 +1,33 @@
 #!/bin/bash
 
-echo "===== DEPLOY STATIC SITE 🚀 ====="
+echo "===== DEPLOY STATIC SITE + CLOUDFLARE 🚀 ====="
 
-# validar root
-if [ "$EUID" -ne 0 ]; then
-  echo "❌ Ejecuta como root: sudo ./deploy-static-site.sh"
-  exit 1
-fi
-
-# pedir datos
 read -p "Dominio (ej: midominio.com): " DOMAIN
-read -p "Email para SSL (ej: correo@gmail.com): " EMAIL
+read -p "Nombre del túnel (ej: byteobe-tunnel): " TUNNEL_NAME
+read -p "Ruta credenciales (ej: /root/.cloudflared/xxx.json): " CREDENTIALS
 
-if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then
-  echo "❌ Dominio y email son obligatorios"
-  exit 1
-fi
-
-WEB_ROOT="/var/www/$DOMAIN"
+WWW_PATH="/var/www/$DOMAIN"
 NGINX_AVAILABLE="/etc/nginx/sites-available/$DOMAIN"
 NGINX_ENABLED="/etc/nginx/sites-enabled/$DOMAIN"
+CLOUDFLARED_CONFIG="/etc/cloudflared/config.yml"
 
 echo "===== CREANDO DIRECTORIO ====="
+mkdir -p $WWW_PATH
+chown -R www-data:www-data $WWW_PATH
 
-mkdir -p $WEB_ROOT
-chown -R www-data:www-data $WEB_ROOT
-chmod -R 755 $WEB_ROOT
-
-# crear index de prueba
-cat <<EOF > $WEB_ROOT/index.html
-<!DOCTYPE html>
-<html>
-<head>
-  <title>$DOMAIN</title>
-</head>
-<body>
-  <h1>🚀 Sitio funcionando en $DOMAIN</h1>
-</body>
-</html>
+echo "===== CREANDO INDEX POR DEFECTO ====="
+cat > $WWW_PATH/index.html <<EOF
+<h1>🚀 $DOMAIN funcionando</h1>
+<p>Configurado con Cloudflare Tunnel</p>
 EOF
 
 echo "===== CONFIGURANDO NGINX ====="
-
-cat <<EOF > $NGINX_AVAILABLE
+cat > $NGINX_AVAILABLE <<EOF
 server {
     listen 80;
     server_name $DOMAIN www.$DOMAIN;
 
-    root $WEB_ROOT;
+    root $WWW_PATH;
     index index.html;
 
     location / {
@@ -58,23 +38,33 @@ EOF
 
 ln -sf $NGINX_AVAILABLE $NGINX_ENABLED
 
-echo "===== REINICIANDO NGINX ====="
+echo "===== VALIDANDO NGINX ====="
+nginx -t || { echo "Error en nginx"; exit 1; }
 
-systemctl reload nginx
+systemctl restart nginx
 
-echo "===== INSTALANDO CERTBOT ====="
+echo "===== CONFIGURANDO CLOUDFLARED ====="
 
-apt update
-apt install -y certbot python3-certbot-nginx
+cat > $CLOUDFLARED_CONFIG <<EOF
+tunnel: $TUNNEL_NAME
+credentials-file: $CREDENTIALS
 
-echo "===== GENERANDO SSL ====="
+ingress:
+  - hostname: $DOMAIN
+    service: http://localhost:80
 
-certbot --nginx -d $DOMAIN -d www.$DOMAIN --non-interactive --agree-tos -m $EMAIL --redirect
+  - hostname: www.$DOMAIN
+    service: http://localhost:80
 
-echo "===== VERIFICANDO RENOVACIÓN ====="
+  - service: http_status:404
+EOF
 
-systemctl enable certbot.timer
-systemctl start certbot.timer
+echo "===== REINICIANDO CLOUDFLARED ====="
+systemctl restart cloudflared
+
+echo "===== STATUS ====="
+systemctl status cloudflared --no-pager
 
 echo "===== LISTO 🚀 ====="
-echo "👉 https://$DOMAIN"
+echo "👉 Sube tus archivos a: $WWW_PATH"
+echo "👉 Tu web estará en: https://$DOMAIN"
