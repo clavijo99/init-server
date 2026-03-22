@@ -20,27 +20,38 @@ NGINX_DIR="$APP_PATH/nginx.conf.d"
 
 mkdir -p $NGINX_DIR
 
-echo "===== DETECTANDO RUTA DEL PROYECTO ====="
-
-# detectar si existe /app o /src dentro del contenedor
-APP_DIR=$(dokku enter $APP_NAME web bash -c "if [ -d /app ]; then echo /app; elif [ -d /src ]; then echo /src; else echo /app; fi")
-
-echo "✔ Ruta detectada: $APP_DIR"
-
-STATIC_CONTAINER="$APP_DIR/static"
-MEDIA_CONTAINER="$APP_DIR/media"
-
-echo "===== LIMPIANDO CONFIGS VIEJAS ====="
-
+echo "===== LIMPIANDO CONFIG NGINX ====="
 rm -rf $NGINX_DIR/*
 mkdir -p $NGINX_DIR
 chown -R dokku:dokku $NGINX_DIR
 
-echo "===== STORAGE ====="
+echo "===== STORAGE EXISTENTE ====="
+
+EXISTING_STORAGE=$(dokku storage:list $APP_NAME | grep ":")
+
+if [ ! -z "$EXISTING_STORAGE" ]; then
+  echo "⚠️ Ya hay storage configurado:"
+  dokku storage:list $APP_NAME
+
+  read -p "¿Quieres eliminar los mounts actuales? (y/n): " REMOVE_OLD
+
+  if [[ "$REMOVE_OLD" == "y" ]]; then
+    echo "$EXISTING_STORAGE" | while read line; do
+      MOUNT=$(echo $line | awk '{print $2}')
+      dokku storage:unmount $APP_NAME $MOUNT
+    done
+    echo "✔ Storage anterior eliminado"
+  else
+    echo "✔ Manteniendo storage actual"
+  fi
+fi
+
+echo "===== CONFIGURAR STORAGE ====="
 
 read -p "¿Usar storage persistente? (y/n): " USE_STORAGE
 
 if [[ "$USE_STORAGE" == "y" ]]; then
+
   BASE_PATH="/var/lib/dokku/data/storage/$APP_NAME"
 
   mkdir -p $BASE_PATH/static
@@ -49,10 +60,18 @@ if [[ "$USE_STORAGE" == "y" ]]; then
   chown -R dokku:dokku $BASE_PATH
   chmod -R 755 $BASE_PATH
 
-  dokku storage:ensure-directory $APP_NAME
+  echo ""
+  echo "👉 Ruta del proyecto dentro del contenedor:"
+  echo "Ejemplos: /app | /src | /code"
+  read -p "Ruta base (default /app): " BASE_CONTAINER
 
-  dokku storage:unmount $APP_NAME $STATIC_CONTAINER 2>/dev/null
-  dokku storage:unmount $APP_NAME $MEDIA_CONTAINER 2>/dev/null
+  BASE_CONTAINER=${BASE_CONTAINER:-/app}
+
+  STATIC_CONTAINER="$BASE_CONTAINER/static"
+  MEDIA_CONTAINER="$BASE_CONTAINER/media"
+
+  echo "✔ Static: $STATIC_CONTAINER"
+  echo "✔ Media:  $MEDIA_CONTAINER"
 
   dokku storage:mount $APP_NAME $BASE_PATH/static:$STATIC_CONTAINER
   dokku storage:mount $APP_NAME $BASE_PATH/media:$MEDIA_CONTAINER
@@ -61,9 +80,6 @@ if [[ "$USE_STORAGE" == "y" ]]; then
   MEDIA_PATH="$BASE_PATH/media"
 
   echo "✔ Storage montado correctamente"
-
-else
-  echo "✔ Sin storage persistente"
 fi
 
 echo "===== DJANGO ====="
