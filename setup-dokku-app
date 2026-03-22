@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "===== SETUP COMPLETO DOKKU APP 🚀 ====="
+echo "===== SETUP DOKKU APP PRO 🚀 ====="
 
 # validar root
 if [ "$EUID" -ne 0 ]; then
@@ -8,7 +8,7 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-read -p "Nombre de la app (ej: afi-v2): " APP_NAME
+read -p "Nombre de la app: " APP_NAME
 
 if [ -z "$APP_NAME" ]; then
   echo "❌ Debes ingresar el nombre de la app"
@@ -20,14 +20,28 @@ NGINX_DIR="$APP_PATH/nginx.conf.d"
 
 mkdir -p $NGINX_DIR
 
+echo "===== DETECTANDO RUTA DEL PROYECTO ====="
+
+# detectar si existe /app o /src dentro del contenedor
+APP_DIR=$(dokku enter $APP_NAME web bash -c "if [ -d /app ]; then echo /app; elif [ -d /src ]; then echo /src; else echo /app; fi")
+
+echo "✔ Ruta detectada: $APP_DIR"
+
+STATIC_CONTAINER="$APP_DIR/static"
+MEDIA_CONTAINER="$APP_DIR/media"
+
+echo "===== LIMPIANDO CONFIGS VIEJAS ====="
+
+rm -rf $NGINX_DIR/*
+mkdir -p $NGINX_DIR
+chown -R dokku:dokku $NGINX_DIR
+
 echo "===== STORAGE ====="
 
 read -p "¿Usar storage persistente? (y/n): " USE_STORAGE
 
 if [[ "$USE_STORAGE" == "y" ]]; then
   BASE_PATH="/var/lib/dokku/data/storage/$APP_NAME"
-
-  echo "✔ Usando storage persistente en $BASE_PATH"
 
   mkdir -p $BASE_PATH/static
   mkdir -p $BASE_PATH/media
@@ -37,55 +51,35 @@ if [[ "$USE_STORAGE" == "y" ]]; then
 
   dokku storage:ensure-directory $APP_NAME
 
-  dokku storage:unmount $APP_NAME /app/static 2>/dev/null
-  dokku storage:unmount $APP_NAME /app/media 2>/dev/null
+  dokku storage:unmount $APP_NAME $STATIC_CONTAINER 2>/dev/null
+  dokku storage:unmount $APP_NAME $MEDIA_CONTAINER 2>/dev/null
 
-  dokku storage:mount $APP_NAME $BASE_PATH/static:/app/static
-  dokku storage:mount $APP_NAME $BASE_PATH/media:/app/media
+  dokku storage:mount $APP_NAME $BASE_PATH/static:$STATIC_CONTAINER
+  dokku storage:mount $APP_NAME $BASE_PATH/media:$MEDIA_CONTAINER
 
   STATIC_PATH="$BASE_PATH/static"
   MEDIA_PATH="$BASE_PATH/media"
 
+  echo "✔ Storage montado correctamente"
+
 else
-  echo "✔ Usando rutas por defecto (no persistente)"
-
-  STATIC_PATH="$APP_PATH/static"
-  MEDIA_PATH="$APP_PATH/media"
-
-  mkdir -p $STATIC_PATH
-  mkdir -p $MEDIA_PATH
-
-  chown -R dokku:dokku $STATIC_PATH $MEDIA_PATH
-  chmod -R 755 $STATIC_PATH $MEDIA_PATH
+  echo "✔ Sin storage persistente"
 fi
 
-echo "===== DJANGO CONFIG ====="
+echo "===== DJANGO ====="
 
 read -p "¿Es una app Django? (y/n): " IS_DJANGO
 
 if [[ "$IS_DJANGO" == "y" ]]; then
 
-  read -p "¿Configurar STATIC? (y/n): " USE_STATIC
-  read -p "¿Configurar MEDIA? (y/n): " USE_MEDIA
-
-  echo "===== CREANDO NGINX serve-files.conf ====="
-
   NGINX_SERVE="$NGINX_DIR/serve-files.conf"
 
-  echo "" > $NGINX_SERVE
-
-  if [[ "$USE_STATIC" == "y" ]]; then
-    cat <<EOF >> $NGINX_SERVE
+  cat <<EOF > $NGINX_SERVE
 location /static/ {
   alias $STATIC_PATH/;
   expires 30d;
   add_header Cache-Control "public";
 }
-EOF
-  fi
-
-  if [[ "$USE_MEDIA" == "y" ]]; then
-    cat <<EOF >> $NGINX_SERVE
 
 location /media/ {
   alias $MEDIA_PATH/;
@@ -93,9 +87,17 @@ location /media/ {
   add_header Cache-Control "public";
 }
 EOF
-  fi
 
   chown dokku:dokku $NGINX_SERVE
+
+  echo ""
+  echo "👉 AGREGA ESTO EN settings.py:"
+  echo ""
+  echo "STATIC_URL = '/static/'"
+  echo "STATIC_ROOT = '$STATIC_CONTAINER'"
+  echo ""
+  echo "MEDIA_URL = '/media/'"
+  echo "MEDIA_ROOT = '$MEDIA_CONTAINER'"
 fi
 
 echo "===== CORS ====="
@@ -121,31 +123,32 @@ echo "===== FILE SIZE ====="
 read -p "Tamaño máximo upload (default 20M): " FILE_SIZE
 FILE_SIZE=${FILE_SIZE:-20M}
 
-cat <<EOF > $NGINX_DIR/file-size.conf
-client_max_body_size $FILE_SIZE;
-EOF
-
-chown dokku:dokku $NGINX_DIR/file-size.conf
+dokku nginx:set $APP_NAME client-max-body-size $FILE_SIZE
 
 echo "===== HSTS ====="
 
-cat <<EOF > $NGINX_DIR/hsts.conf
+read -p "¿Habilitar HSTS? (solo si usas SSL) (y/n): " ENABLE_HSTS
+
+if [[ "$ENABLE_HSTS" == "y" ]]; then
+  cat <<EOF > $NGINX_DIR/hsts.conf
 add_header Strict-Transport-Security "max-age=15724800; includeSubdomains" always;
 EOF
 
-chown dokku:dokku $NGINX_DIR/hsts.conf
+  chown dokku:dokku $NGINX_DIR/hsts.conf
+fi
 
-echo "===== REINICIANDO APP ====="
+echo "===== RELOAD NGINX ====="
+
+dokku nginx:reload $APP_NAME
+
+echo "===== RESTART APP ====="
 
 dokku ps:restart $APP_NAME
 
 echo "===== LISTO 🚀 ====="
-echo "✔ App configurada"
-echo "✔ Storage listo"
-echo "✔ Nginx optimizado"
 
 if [[ "$IS_DJANGO" == "y" ]]; then
   echo ""
-  echo "👉 Ejecuta:"
+  echo "👉 Ejecuta ahora:"
   echo "dokku run $APP_NAME python manage.py collectstatic --noinput"
 fi
