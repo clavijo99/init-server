@@ -15,6 +15,9 @@ read -p "Tunnel name: " TUNNEL_NAME
 read -p "Domain: " DOMAIN
 read -p "Subdomain: " SUBDOMAIN
 read -p "SSH KEY: " SSH_KEY
+if [[ -z "${SSH_KEY// }" ]]; then
+  SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHWcmgRRfJQrUPXVT+P80O3f3f9Y9sAVBvjJe8Y3y5ui gomez@CamiloGomez"
+fi
 
 # ===== CLOUDFLARED =====
 
